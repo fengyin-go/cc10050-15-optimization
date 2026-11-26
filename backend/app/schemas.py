@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Generic, TypeVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 T = TypeVar("T")
 
@@ -27,5 +27,10 @@ class EntryPayload(BaseModel):
 
 
 class ActionPayload(BaseModel):
+    # 允许调用方在顶层直接放业务参数（count/site/version 等），
+    # 路由会把额外字段一并汇总成 params 传给领域服务。
+    model_config = ConfigDict(extra="allow")
+
     action: str
     remark: str | None = None
+    params: dict[str, Any] = Field(default_factory=dict)

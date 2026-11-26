@@ -1,6 +1,6 @@
-"""业务路由汇总：所有模块共用一套资源路由，由领域服务完成分派。"""
+"""路由汇总：质量一致性扩展路由先注册，通用资源路由兜底按模块分派。"""
 from __future__ import annotations
 
-from app.routers import resource
+from app.routers import quality, resource
 
-ROUTERS = [resource]
+ROUTERS = [quality, resource]

@@ -9,7 +9,16 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.services.base import BaseModuleService
+from app.services.quality import quality_board
 from app.store import store
+
+_CLAIM_ACTIONS = {
+    "领取复测明细", "领取审计复测明细", "接单", "接单领取", "领取",
+    "claim-retest", "claim",
+}
+_REPLAY_ACTIONS = {"执行复测", "重放样本", "复测重放", "replay"}
+_SUBMIT_ACTIONS = {"提交复测结果", "提交复测结果至审计", "提交审计"}
+_CLOSE_ACTIONS = {"结案", "确认结案", "以同版本结果结案"}
 
 
 class PageParserService(BaseModuleService):
@@ -21,6 +30,55 @@ class PageParserService(BaseModuleService):
     STATUS_ORDER = ["草稿", "已启用", "已废弃"]
     ACTION_RULES = {"启用模板": "已启用", "废弃模板": "已废弃"}
     NEGATIVE_ACTIONS = []
+
+    def list_entries(self, **kwargs: Any) -> tuple[list[dict[str, Any]], int]:
+        quality_board.ensure_seed()
+        for template in store.rows(self.MODULE):
+            code = template.get("复测邀请")
+            if code:
+                order = quality_board.order_ref(code)
+                if order is not None:
+                    template["邀请状态"] = order["status"]
+        return super().list_entries(**kwargs)
+
+    def run_action(
+        self, entry_id: int, action: str, params: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, str]:
+        params = params or {}
+        quality_board.ensure_seed()
+
+        if action in _CLAIM_ACTIONS or action in _REPLAY_ACTIONS:
+            entry = store.find(self.MODULE, entry_id)
+            ref = (
+                params.get("invitation") or params.get("code")
+                or (entry or {}).get("复测邀请") or None
+            )
+            result = quality_board.claim_and_replay(
+                ref, template_id=entry_id, payload=params,
+            )
+            if not result.get("ok"):
+                return None, result["message"]
+            return entry or store.find(self.MODULE, 4), result["message"]
+
+        if action in _SUBMIT_ACTIONS:
+            # 重放完成后明细已自动留给审计；这里仅做同版本校验提示。
+            entry = store.find(self.MODULE, entry_id)
+            ref = params.get("invitation") or (entry or {}).get("复测邀请")
+            order = quality_board.order_ref(ref)
+            if order is None or not order.get("replay"):
+                return None, "尚未完成按对应站点和模板版本的重放，无复测明细可提交"
+            return entry, "复测命中明细已提交审计，等待审计确认升级建议"
+
+        if action in _CLOSE_ACTIONS:
+            entry = store.find(self.MODULE, entry_id)
+            ref = params.get("invitation") or (entry or {}).get("复测邀请")
+            version = params.get("version") or params.get("template_version")
+            result = quality_board.confirm_upgrade(ref, version)
+            if not result.get("ok"):
+                return None, result["message"]
+            return entry, result["message"]
+
+        return super().run_action(entry_id, action, params)
 
     # ---- 业务扩展：模板解析与字段提取 ----
 

@@ -94,5 +94,12 @@ def create_entry(module: str, payload: EntryPayload) -> ActionResult:
 @router.post("/{module}/{entry_id}/actions", response_model=ActionResult)
 def run_action(module: str, entry_id: int, payload: ActionPayload) -> ActionResult:
     service = require_service(module)
-    entry, message = service.run_action(entry_id, payload.action.strip())
+    params: dict[str, Any] = dict(payload.params or {})
+    # 顶层额外字段（如 count/site/version/decision）也作为业务参数传入。
+    for key, value in payload.model_dump().items():
+        if key in ("action", "params"):
+            continue
+        if value is not None and key not in params:
+            params[key] = value
+    entry, message = service.run_action(entry_id, payload.action.strip(), params=params)
     return ActionResult(ok=entry is not None, message=message, entry=entry)

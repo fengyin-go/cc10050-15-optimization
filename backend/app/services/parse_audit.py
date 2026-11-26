@@ -9,18 +9,94 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.services.base import BaseModuleService
+from app.services.quality import quality_board
 from app.store import store
+
+# 解析质量一致性扩展动作（复测邀请状态机）。
+_CONTINUE_ACTIONS = {
+    "继续原邀请", "继续邀请", "继续", "安排复测", "继续原邀请并安排复测",
+}
+_CANCEL_ACTIONS = {"取消邀请", "取消原邀请", "取消"}
+_CONFIRM_ACTIONS = {"确认升级建议", "确认升级", "确认升级建议并结案", "审计确认升级建议"}
+_LATE_ACTIONS = {"迟到样本补报", "补报迟到样本", "迟到补报"}
+_ISSUE_ACTIONS = {"发出复测邀请", "发起复测", "安排复测邀请"}
 
 
 class ParseAuditService(BaseModuleService):
     MODULE = "parse_audit"
     ENTITY = "审计明细"
     OPERATION_TERM = "解析"
-    LIST_FIELDS = ["审计时间", "解析模板", "样本总数", "字段命中率", "失败原因分布"]
+    LIST_FIELDS = [
+        "审计时间", "解析模板", "样本总数", "字段命中率", "失败原因分布",
+        "站点名称", "模板版本", "命中数", "触发规则版本",
+    ]
     REQUIRED_FIELDS = ["审计时间", "解析模板", "样本总数"]
     STATUS_ORDER = ["正常", "命中率下降", "解析异常"]
     ACTION_RULES = {"查看详情": "命中率下降", "忽略告警": "解析异常"}
     NEGATIVE_ACTIONS = ["忽略告警"]
+
+    # ---- 复测一致性：读取前同步当前实际口径 ----
+
+    def list_entries(self, **kwargs: Any) -> tuple[list[dict[str, Any]], int]:
+        quality_board.ensure_seed()
+        quality_board.sync_audit_ticket()
+        return super().list_entries(**kwargs)
+
+    def get_entry(self, entry_id: int) -> dict[str, Any] | None:
+        quality_board.ensure_seed()
+        quality_board.sync_audit_ticket()
+        return super().get_entry(entry_id)
+
+    def run_action(
+        self, entry_id: int, action: str, params: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, str]:
+        params = params or {}
+        quality_board.ensure_seed()
+
+        if action in _LATE_ACTIONS:
+            result = quality_board.report_late_samples(params)
+            ticket = quality_board.order_for_audit(entry_id)
+            row = store.find(self.MODULE, entry_id) or store.find(self.MODULE, 4)
+            return row, result["message"]
+
+        if action in _ISSUE_ACTIONS:
+            # 严格按该审计单的站点/版本口径判定，样本不足或已恢复都不发邀请。
+            row = store.find(self.MODULE, entry_id)
+            site = str(params.get("site") or (row or {}).get("站点名称") or "北站")
+            evaluation = quality_board.evaluate(site)
+            if not evaluation["meets_min_samples"]:
+                return None, (
+                    f"{site} 站当前仅 {evaluation['sample_count']} 个去重样本，"
+                    f"不足最低样本 {evaluation['min_samples']}，不应降级，也不能拼量发出复测"
+                )
+            if not evaluation["degraded"]:
+                return None, (
+                    f"{site} 站当前命中率 {evaluation['rate_text']} 已不低于阈值 "
+                    f"{evaluation['threshold_text']}，触发条件不成立，不新发复测邀请；"
+                    f"若存在原邀请请继续原邀请或取消"
+                )
+            return row, "该口径已存在生效中的复测邀请，请在原邀请上继续或取消"
+
+        if action in _CONTINUE_ACTIONS or action in _CANCEL_ACTIONS or action in _CONFIRM_ACTIONS:
+            order = (
+                quality_board.order_for_audit(entry_id)
+                or quality_board.order_ref(params.get("invitation") or params.get("code"))
+                or quality_board.active_order()
+            )
+            ref = order["code"] if order else params.get("invitation")
+            if action in _CONTINUE_ACTIONS:
+                result = quality_board.decide_invitation(ref, "continue", params.get("remark"))
+            elif action in _CANCEL_ACTIONS:
+                result = quality_board.decide_invitation(ref, "cancel", params.get("remark"))
+            else:
+                version = params.get("version") or params.get("template_version")
+                result = quality_board.confirm_upgrade(ref, version)
+            row = store.find(self.MODULE, entry_id) or store.find(self.MODULE, 4)
+            if not result.get("ok"):
+                return None, result["message"]
+            return row, result["message"]
+
+        return super().run_action(entry_id, action, params)
 
     # ---- 业务扩展：命中率审计与劣化告警 ----
 

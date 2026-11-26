@@ -22,6 +22,20 @@ class SampleStoreService(BaseModuleService):
     ACTION_RULES = {"标记解析": "已解析", "标记过期": "已过期"}
     NEGATIVE_ACTIONS = []
 
+    def run_action(
+        self, entry_id: int, action: str, params: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, str]:
+        params = params or {}
+        if action in {"迟到样本补报", "补报迟到样本", "迟到补报", "late-report"}:
+            from app.services.quality import quality_board
+
+            result = quality_board.report_late_samples(params)
+            entry = store.find(self.MODULE, entry_id)
+            if not result.get("ok"):
+                return None, result["message"]
+            return entry, result["message"]
+        return super().run_action(entry_id, action, params)
+
     # ---- 业务扩展：样本留存与指纹去重 ----
 
     def mark_parsed(self, entry_id: int) -> dict[str, Any]:

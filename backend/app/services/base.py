@@ -32,8 +32,15 @@ class BaseModuleService:
                     if expected.casefold() in str(row.get(field, "")).casefold()
                 ]
         if keyword and self.LIST_FIELDS:
-            field = self.LIST_FIELDS[0]
-            rows = [row for row in rows if keyword.casefold() in str(row.get(field, "")).casefold()]
+            needle = keyword.casefold()
+            # 关键字在任意列表字段中命中即可（站点/模板名等都可能是检索入口）。
+            rows = [
+                row for row in rows
+                if any(
+                    needle in str(row.get(field, "")).casefold()
+                    for field in self.LIST_FIELDS
+                )
+            ]
         if status:
             rows = [row for row in rows if row.get("status") == status]
         total = len(rows)
@@ -59,7 +66,9 @@ class BaseModuleService:
         rows.append(entry)
         return entry, []
 
-    def run_action(self, entry_id: int, action: str) -> tuple[dict[str, Any] | None, str]:
+    def run_action(
+        self, entry_id: int, action: str, params: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, str]:
         entry = store.find(self.MODULE, entry_id)
         if entry is None:
             return None, f"{self.ENTITY} {entry_id} 不存在或已归档"

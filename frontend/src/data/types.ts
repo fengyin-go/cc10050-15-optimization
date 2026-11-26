@@ -14,6 +14,7 @@ export type ModuleMeta = {
   entity: string
   desc: string
   fields: string[]
+  optionalFields?: string[]
   statuses: string[]
   actions: string[]
   actionTargets: Record<string, string>
@@ -30,6 +31,7 @@ export type PageResult = {
 export type ActionResult = {
   ok: boolean
   message: string
+  entry?: EntryRow | null
 }
 
 export type OverviewResult = {
